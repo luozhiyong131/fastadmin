@@ -13,3 +13,6 @@ composer.lock
 *.css.map
 !.gitkeep
 .env
+.svn
+.vscode
+node_modules

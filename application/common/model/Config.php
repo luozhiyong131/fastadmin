@@ -19,6 +19,10 @@ class Config extends Model
     protected $updateTime = false;
     // 追加属性
     protected $append = [
+        'extend_html'
+    ];
+    protected $type = [
+        'setting' => 'json',
     ];
 
     /**
@@ -28,24 +32,28 @@ class Config extends Model
     public static function getTypeList()
     {
         $typeList = [
-            'string'   => __('String'),
-            'text'     => __('Text'),
-            'editor'   => __('Editor'),
-            'number'   => __('Number'),
-            'date'     => __('Date'),
-            'time'     => __('Time'),
-            'datetime' => __('Datetime'),
-            'select'   => __('Select'),
-            'selects'  => __('Selects'),
-            'image'    => __('Image'),
-            'images'   => __('Images'),
-            'file'     => __('File'),
-            'files'    => __('Files'),
-            'switch'   => __('Switch'),
-            'checkbox' => __('Checkbox'),
-            'radio'    => __('Radio'),
-            'array'    => __('Array'),
-            'custom'   => __('Custom'),
+            'string'        => __('String'),
+            'text'          => __('Text'),
+            'editor'        => __('Editor'),
+            'number'        => __('Number'),
+            'date'          => __('Date'),
+            'time'          => __('Time'),
+            'datetime'      => __('Datetime'),
+            'datetimerange' => __('Datetimerange'),
+            'select'        => __('Select'),
+            'selects'       => __('Selects'),
+            'image'         => __('Image'),
+            'images'        => __('Images'),
+            'file'          => __('File'),
+            'files'         => __('Files'),
+            'switch'        => __('Switch'),
+            'checkbox'      => __('Checkbox'),
+            'radio'         => __('Radio'),
+            'city'          => __('City'),
+            'selectpage'    => __('Selectpage'),
+            'selectpages'   => __('Selectpages'),
+            'array'         => __('Array'),
+            'custom'        => __('Custom'),
         ];
         return $typeList;
     }
@@ -72,6 +80,16 @@ class Config extends Model
         return $regexList;
     }
 
+    public function getExtendHtmlAttr($value, $data)
+    {
+        $result = preg_replace_callback("/\{([a-zA-Z]+)\}/", function ($matches) use ($data) {
+            if (isset($data[$matches[1]])) {
+                return $data[$matches[1]];
+            }
+        }, $data['extend']);
+        return $result;
+    }
+
     /**
      * 读取分类分组列表
      * @return array
@@ -87,8 +105,16 @@ class Config extends Model
 
     public static function getArrayData($data)
     {
+        if (!isset($data['value'])) {
+            $result = [];
+            foreach ($data as $index => $datum) {
+                $result['field'][$index] = $datum['key'];
+                $result['value'][$index] = $datum['value'];
+            }
+            $data = $result;
+        }
         $fieldarr = $valuearr = [];
-        $field = isset($data['field']) ? $data['field'] : [];
+        $field = isset($data['field']) ? $data['field'] : (isset($data['key']) ? $data['key'] : []);
         $value = isset($data['value']) ? $data['value'] : [];
         foreach ($field as $m => $n) {
             if ($n != '') {
@@ -143,16 +169,54 @@ class Config extends Model
     {
         $uploadcfg = config('upload');
 
+        $uploadurl = request()->module() ? $uploadcfg['uploadurl'] : ($uploadcfg['uploadurl'] === 'ajax/upload' ? 'index/' . $uploadcfg['uploadurl'] : $uploadcfg['uploadurl']);
+
+        if (!preg_match("/^((?:[a-z]+:)?\/\/)(.*)/i", $uploadurl) && substr($uploadurl, 0, 1) !== '/') {
+            $uploadurl = url($uploadurl, '', false);
+        }
+
         $upload = [
             'cdnurl'    => $uploadcfg['cdnurl'],
-            'uploadurl' => $uploadcfg['uploadurl'],
+            'uploadurl' => $uploadurl,
             'bucket'    => 'local',
             'maxsize'   => $uploadcfg['maxsize'],
             'mimetype'  => $uploadcfg['mimetype'],
+            'chunking'  => $uploadcfg['chunking'],
+            'chunksize' => $uploadcfg['chunksize'],
+            'savekey'   => $uploadcfg['savekey'],
             'multipart' => [],
             'multiple'  => $uploadcfg['multiple'],
+            'storage'   => 'local'
         ];
         return $upload;
+    }
+
+    /**
+     * 刷新配置文件
+     */
+    public static function refreshFile()
+    {
+        //如果没有配置权限无法进行修改
+        if (!\app\admin\library\Auth::instance()->check('general/config/edit')) {
+            return false;
+        }
+        $config = [];
+        $configList = self::all();
+        foreach ($configList as $k => $v) {
+            $value = $v->toArray();
+            if (in_array($value['type'], ['selects', 'checkbox', 'images', 'files'])) {
+                $value['value'] = explode(',', $value['value']);
+            }
+            if ($value['type'] == 'array') {
+                $value['value'] = (array)json_decode($value['value'], true);
+            }
+            $config[$value['name']] = $value['value'];
+        }
+        file_put_contents(
+            CONF_PATH . 'extra' . DS . 'site.php',
+            '<?php' . "\n\nreturn " . var_export_short($config) . ";\n"
+        );
+        return true;
     }
 
 }

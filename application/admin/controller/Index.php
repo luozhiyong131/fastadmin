@@ -22,6 +22,8 @@ class Index extends Backend
     public function _initialize()
     {
         parent::_initialize();
+        //移除HTML标签
+        $this->request->filter('trim,strip_tags,htmlspecialchars');
     }
 
     /**
@@ -67,7 +69,7 @@ class Index extends Backend
             $rule = [
                 'username'  => 'require|length:3,30',
                 'password'  => 'require|length:3,30',
-                '__token__' => 'token',
+                '__token__' => 'require|token',
             ];
             $data = [
                 'username'  => $username,
@@ -100,7 +102,7 @@ class Index extends Backend
             $this->redirect($url);
         }
         $background = Config::get('fastadmin.login_background');
-        $background = stripos($background, 'http') === 0 ? $background : config('site.cdnurl') . $background;
+        $background = $background ? (stripos($background, 'http') === 0 ? $background : config('site.cdnurl') . $background) : '';
         $this->view->assign('background', $background);
         $this->view->assign('title', __('Login'));
         Hook::listen("admin_login_init", $this->request);
@@ -108,7 +110,7 @@ class Index extends Backend
     }
 
     /**
-     * 注销登录
+     * 退出登录
      */
     public function logout()
     {

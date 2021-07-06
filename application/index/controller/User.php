@@ -2,7 +2,11 @@
 
 namespace app\index\controller;
 
+use addons\wechat\model\WechatCaptcha;
 use app\common\controller\Frontend;
+use app\common\library\Ems;
+use app\common\library\Sms;
+use app\common\model\Attachment;
 use think\Config;
 use think\Cookie;
 use think\Hook;
@@ -14,7 +18,6 @@ use think\Validate;
  */
 class User extends Frontend
 {
-
     protected $layout = 'default';
     protected $noNeedLogin = ['login', 'register', 'third'];
     protected $noNeedRight = ['*'];
@@ -28,12 +31,7 @@ class User extends Frontend
             $this->error(__('User center already closed'));
         }
 
-        $ucenter = get_addon_info('ucenter');
-        if ($ucenter && $ucenter['state']) {
-            include ADDON_PATH . 'ucenter' . DS . 'uc.php';
-        }
-
-        //监听注册登录注销的事件
+        //监听注册登录退出的事件
         Hook::add('user_login_successed', function ($user) use ($auth) {
             $expire = input('post.keeplogin') ? 30 * 86400 : 0;
             Cookie::set('uid', $user->id, $expire);
@@ -54,20 +52,6 @@ class User extends Frontend
     }
 
     /**
-     * 空的请求
-     * @param $name
-     * @return mixed
-     */
-    public function _empty($name)
-    {
-        $data = Hook::listen("user_request_empty", $name);
-        foreach ($data as $index => $datum) {
-            $this->view->assign($datum);
-        }
-        return $this->view->fetch('user/' . $name);
-    }
-
-    /**
      * 会员中心
      */
     public function index()
@@ -81,9 +65,10 @@ class User extends Frontend
      */
     public function register()
     {
-        $url = $this->request->request('url');
-        if ($this->auth->id)
-            $this->success(__('You\'ve logged in, do not login again'), $url);
+        $url = $this->request->request('url', '', 'trim');
+        if ($this->auth->id) {
+            $this->success(__('You\'ve logged in, do not login again'), $url ? $url : url('user/index'));
+        }
         if ($this->request->isPost()) {
             $username = $this->request->post('username');
             $password = $this->request->post('password');
@@ -96,8 +81,7 @@ class User extends Frontend
                 'password'  => 'require|length:6,30',
                 'email'     => 'require|email',
                 'mobile'    => 'regex:/^1\d{10}$/',
-                'captcha'   => 'require|captcha',
-                '__token__' => 'token',
+                '__token__' => 'require|token',
             ];
 
             $msg = [
@@ -105,8 +89,6 @@ class User extends Frontend
                 'username.length'  => 'Username must be 3 to 30 characters',
                 'password.require' => 'Password can not be empty',
                 'password.length'  => 'Password must be 6 to 30 characters',
-                'captcha.require'  => 'Captcha can not be empty',
-                'captcha.captcha'  => 'Captcha is incorrect',
                 'email'            => 'Email is incorrect',
                 'mobile'           => 'Mobile is incorrect',
             ];
@@ -115,22 +97,32 @@ class User extends Frontend
                 'password'  => $password,
                 'email'     => $email,
                 'mobile'    => $mobile,
-                'captcha'   => $captcha,
                 '__token__' => $token,
             ];
+            //验证码
+            $captchaResult = true;
+            $captchaType = config("fastadmin.user_register_captcha");
+            if ($captchaType) {
+                if ($captchaType == 'mobile') {
+                    $captchaResult = Sms::check($mobile, $captcha, 'register');
+                } elseif ($captchaType == 'email') {
+                    $captchaResult = Ems::check($email, $captcha, 'register');
+                } elseif ($captchaType == 'wechat') {
+                    $captchaResult = WechatCaptcha::check($captcha, 'register');
+                } elseif ($captchaType == 'text') {
+                    $captchaResult = \think\Validate::is($captcha, 'captcha');
+                }
+            }
+            if (!$captchaResult) {
+                $this->error(__('Captcha is incorrect'));
+            }
             $validate = new Validate($rule, $msg);
             $result = $validate->check($data);
             if (!$result) {
                 $this->error(__($validate->getError()), null, ['token' => $this->request->token()]);
             }
             if ($this->auth->register($username, $password, $email, $mobile)) {
-                $synchtml = '';
-                ////////////////同步到Ucenter////////////////
-                if (defined('UC_STATUS') && UC_STATUS) {
-                    $uc = new \addons\ucenter\library\client\Client();
-                    $synchtml = $uc->uc_user_synregister($this->auth->id, $password);
-                }
-                $this->success(__('Sign up successful') . $synchtml, $url ? $url : url('user/index'));
+                $this->success(__('Sign up successful'), $url ? $url : url('user/index'));
             } else {
                 $this->error($this->auth->getError(), null, ['token' => $this->request->token()]);
             }
@@ -138,9 +130,10 @@ class User extends Frontend
         //判断来源
         $referer = $this->request->server('HTTP_REFERER');
         if (!$url && (strtolower(parse_url($referer, PHP_URL_HOST)) == strtolower($this->request->host()))
-            && !preg_match("/(user\/login|user\/register)/i", $referer)) {
+            && !preg_match("/(user\/login|user\/register|user\/logout)/i", $referer)) {
             $url = $referer;
         }
+        $this->view->assign('captchaType', config('fastadmin.user_register_captcha'));
         $this->view->assign('url', $url);
         $this->view->assign('title', __('Register'));
         return $this->view->fetch();
@@ -151,9 +144,10 @@ class User extends Frontend
      */
     public function login()
     {
-        $url = $this->request->request('url');
-        if ($this->auth->id)
-            $this->success(__('You\'ve logged in, do not login again'), $url);
+        $url = $this->request->request('url', '', 'trim');
+        if ($this->auth->id) {
+            $this->success(__('You\'ve logged in, do not login again'), $url ? $url : url('user/index'));
+        }
         if ($this->request->isPost()) {
             $account = $this->request->post('account');
             $password = $this->request->post('password');
@@ -162,7 +156,7 @@ class User extends Frontend
             $rule = [
                 'account'   => 'require|length:3,50',
                 'password'  => 'require|length:6,30',
-                '__token__' => 'token',
+                '__token__' => 'require|token',
             ];
 
             $msg = [
@@ -180,16 +174,10 @@ class User extends Frontend
             $result = $validate->check($data);
             if (!$result) {
                 $this->error(__($validate->getError()), null, ['token' => $this->request->token()]);
-                return FALSE;
+                return false;
             }
             if ($this->auth->login($account, $password)) {
-                $synchtml = '';
-                ////////////////同步到Ucenter////////////////
-                if (defined('UC_STATUS') && UC_STATUS) {
-                    $uc = new \addons\ucenter\library\client\Client();
-                    $synchtml = $uc->uc_user_synlogin($this->auth->id);
-                }
-                $this->success(__('Logged in successful') . $synchtml, $url ? $url : url('user/index'));
+                $this->success(__('Logged in successful'), $url ? $url : url('user/index'));
             } else {
                 $this->error($this->auth->getError(), null, ['token' => $this->request->token()]);
             }
@@ -197,7 +185,7 @@ class User extends Frontend
         //判断来源
         $referer = $this->request->server('HTTP_REFERER');
         if (!$url && (strtolower(parse_url($referer, PHP_URL_HOST)) == strtolower($this->request->host()))
-            && !preg_match("/(user\/login|user\/register)/i", $referer)) {
+            && !preg_match("/(user\/login|user\/register|user\/logout)/i", $referer)) {
             $url = $referer;
         }
         $this->view->assign('url', $url);
@@ -206,19 +194,13 @@ class User extends Frontend
     }
 
     /**
-     * 注销登录
+     * 退出登录
      */
-    function logout()
+    public function logout()
     {
-        //注销本站
+        //退出本站
         $this->auth->logout();
-        $synchtml = '';
-        ////////////////同步到Ucenter////////////////
-        if (defined('UC_STATUS') && UC_STATUS) {
-            $uc = new \addons\ucenter\library\client\Client();
-            $synchtml = $uc->uc_user_synlogout();
-        }
-        $this->success(__('Logout successful') . $synchtml, url('user/index'));
+        $this->success(__('Logout successful'), url('user/index'));
     }
 
     /**
@@ -248,6 +230,7 @@ class User extends Frontend
             ];
 
             $msg = [
+                'renewpassword.confirm' => __('Password and confirm password don\'t match')
             ];
             $data = [
                 'oldpassword'   => $oldpassword,
@@ -264,18 +247,12 @@ class User extends Frontend
             $result = $validate->check($data);
             if (!$result) {
                 $this->error(__($validate->getError()), null, ['token' => $this->request->token()]);
-                return FALSE;
+                return false;
             }
 
             $ret = $this->auth->changepwd($newpassword, $oldpassword);
             if ($ret) {
-                $synchtml = '';
-                ////////////////同步到Ucenter////////////////
-                if (defined('UC_STATUS') && UC_STATUS) {
-                    $uc = new \addons\ucenter\library\client\Client();
-                    $synchtml = $uc->uc_user_synlogout();
-                }
-                $this->success(__('Reset password successful') . $synchtml, url('user/login'));
+                $this->success(__('Reset password successful'), url('user/login'));
             } else {
                 $this->error($this->auth->getError(), null, ['token' => $this->request->token()]);
             }
@@ -284,4 +261,67 @@ class User extends Frontend
         return $this->view->fetch();
     }
 
+    public function attachment()
+    {
+        //设置过滤方法
+        $this->request->filter(['strip_tags']);
+        if ($this->request->isAjax()) {
+            $mimetypeQuery = [];
+            $where = [];
+            $filter = $this->request->request('filter');
+            $filterArr = (array)json_decode($filter, true);
+            if (isset($filterArr['mimetype']) && preg_match("/[]\,|\*]/", $filterArr['mimetype'])) {
+                $this->request->get(['filter' => json_encode(array_diff_key($filterArr, ['mimetype' => '']))]);
+                $mimetypeQuery = function ($query) use ($filterArr) {
+                    $mimetypeArr = explode(',', $filterArr['mimetype']);
+                    foreach ($mimetypeArr as $index => $item) {
+                        if (stripos($item, "/*") !== false) {
+                            $query->whereOr('mimetype', 'like', str_replace("/*", "/", $item) . '%');
+                        } else {
+                            $query->whereOr('mimetype', 'like', '%' . $item . '%');
+                        }
+                    }
+                };
+            } elseif (isset($filterArr['mimetype'])) {
+                $where['mimetype'] = ['like', '%' . $filterArr['mimetype'] . '%'];
+            }
+
+            if (isset($filterArr['filename'])) {
+                $where['filename'] = ['like', '%' . $filterArr['filename'] . '%'];
+            }
+
+            if (isset($filterArr['createtime'])) {
+                $timeArr = explode(' - ', $filterArr['createtime']);
+                $where['createtime'] = ['between', [strtotime($timeArr[0]), strtotime($timeArr[1])]];
+            }
+
+            $model = new Attachment();
+            $offset = $this->request->get("offset", 0);
+            $limit = $this->request->get("limit", 0);
+            $total = $model
+                ->where($where)
+                ->where($mimetypeQuery)
+                ->where('user_id', $this->auth->id)
+                ->order("id", "DESC")
+                ->count();
+
+            $list = $model
+                ->where($where)
+                ->where($mimetypeQuery)
+                ->where('user_id', $this->auth->id)
+                ->order("id", "DESC")
+                ->limit($offset, $limit)
+                ->select();
+            $cdnurl = preg_replace("/\/(\w+)\.php$/i", '', $this->request->root());
+            foreach ($list as $k => &$v) {
+                $v['fullurl'] = ($v['storage'] == 'local' ? $cdnurl : $this->view->config['upload']['cdnurl']) . $v['url'];
+            }
+            unset($v);
+            $result = array("total" => $total, "rows" => $list);
+
+            return json($result);
+        }
+        $this->view->assign("mimetypeList", \app\common\model\Attachment::getMimetypeList());
+        return $this->view->fetch();
+    }
 }

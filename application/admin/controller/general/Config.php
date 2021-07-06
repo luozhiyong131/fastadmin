@@ -5,12 +5,15 @@ namespace app\admin\controller\general;
 use app\common\controller\Backend;
 use app\common\library\Email;
 use app\common\model\Config as ConfigModel;
+use think\Cache;
+use think\Db;
 use think\Exception;
+use think\Validate;
 
 /**
  * 系统配置
  *
- * @icon fa fa-cogs
+ * @icon   fa fa-cogs
  * @remark 可以在此增改系统的变量和分组,也可以自定义分组和变量,如果需要删除请从数据库中删除
  */
 class Config extends Backend
@@ -20,12 +23,18 @@ class Config extends Backend
      * @var \app\common\model\Config
      */
     protected $model = null;
-    protected $noNeedRight = ['check'];
+    protected $noNeedRight = ['check', 'rulelist', 'selectpage', 'get_fields_list'];
 
     public function _initialize()
     {
         parent::_initialize();
-        $this->model = model('Config');
+        // $this->model = model('Config');
+        $this->model = new ConfigModel;
+        ConfigModel::event('before_write', function ($row) {
+            if (isset($row['name']) && $row['name'] == 'name' && preg_match("/fast" . "admin/i", $row['value'])) {
+                throw new Exception(__("Site name incorrect"));
+            }
+        });
     }
 
     /**
@@ -50,7 +59,8 @@ class Config extends Backend
             if (in_array($value['type'], ['select', 'selects', 'checkbox', 'radio'])) {
                 $value['value'] = explode(',', $value['value']);
             }
-            $value['content'] = json_decode($value['content'], TRUE);
+            $value['content'] = json_decode($value['content'], true);
+            $value['tip'] = htmlspecialchars($value['tip']);
             $siteList[$v['group']]['list'][] = $value;
         }
         $index = 0;
@@ -60,6 +70,7 @@ class Config extends Backend
         }
         $this->view->assign('siteList', $siteList);
         $this->view->assign('typeList', ConfigModel::getTypeList());
+        $this->view->assign('ruleList', ConfigModel::getRegexList());
         $this->view->assign('groupList', ConfigModel::getGroupList());
         return $this->view->fetch();
     }
@@ -70,30 +81,31 @@ class Config extends Backend
     public function add()
     {
         if ($this->request->isPost()) {
-            $params = $this->request->post("row/a");
+            $this->token();
+            $params = $this->request->post("row/a", [], 'trim');
             if ($params) {
                 foreach ($params as $k => &$v) {
-                    $v = is_array($v) ? implode(',', $v) : $v;
+                    $v = is_array($v) && $k !== 'setting' ? implode(',', $v) : $v;
+                }
+                if (in_array($params['type'], ['select', 'selects', 'checkbox', 'radio', 'array'])) {
+                    $params['content'] = json_encode(ConfigModel::decode($params['content']), JSON_UNESCAPED_UNICODE);
+                } else {
+                    $params['content'] = '';
                 }
                 try {
-                    if (in_array($params['type'], ['select', 'selects', 'checkbox', 'radio', 'array'])) {
-                        $params['content'] = json_encode(ConfigModel::decode($params['content']), JSON_UNESCAPED_UNICODE);
-                    } else {
-                        $params['content'] = '';
-                    }
                     $result = $this->model->create($params);
-                    if ($result !== false) {
-                        try {
-                            $this->refreshFile();
-                        } catch (Exception $e) {
-                            $this->error($e->getMessage());
-                        }
-                        $this->success();
-                    } else {
-                        $this->error($this->model->getError());
-                    }
                 } catch (Exception $e) {
                     $this->error($e->getMessage());
+                }
+                if ($result !== false) {
+                    try {
+                        ConfigModel::refreshFile();
+                    } catch (Exception $e) {
+                        $this->error($e->getMessage());
+                    }
+                    $this->success();
+                } else {
+                    $this->error($this->model->getError());
                 }
             }
             $this->error(__('Parameter %s can not be empty', ''));
@@ -105,10 +117,11 @@ class Config extends Backend
      * 编辑
      * @param null $ids
      */
-    public function edit($ids = NULL)
+    public function edit($ids = null)
     {
         if ($this->request->isPost()) {
-            $row = $this->request->post("row/a");
+            $this->token();
+            $row = $this->request->post("row/a", [], 'trim');
             if ($row) {
                 $configList = [];
                 foreach ($this->model->all() as $v) {
@@ -123,9 +136,13 @@ class Config extends Backend
                         $configList[] = $v->toArray();
                     }
                 }
-                $this->model->allowField(true)->saveAll($configList);
                 try {
-                    $this->refreshFile();
+                    $this->model->allowField(true)->saveAll($configList);
+                } catch (Exception $e) {
+                    $this->error($e->getMessage());
+                }
+                try {
+                    ConfigModel::refreshFile();
                 } catch (Exception $e) {
                     $this->error($e->getMessage());
                 }
@@ -135,14 +152,18 @@ class Config extends Backend
         }
     }
 
+    /**
+     * 删除
+     * @param string $ids
+     */
     public function del($ids = "")
     {
-        $name = $this->request->request('name');
+        $name = $this->request->post('name');
         $config = ConfigModel::getByName($name);
-        if ($config) {
+        if ($name && $config) {
             try {
                 $config->delete();
-                $this->refreshFile();
+                ConfigModel::refreshFile();
             } catch (Exception $e) {
                 $this->error($e->getMessage());
             }
@@ -153,26 +174,6 @@ class Config extends Backend
     }
 
     /**
-     * 刷新配置文件
-     */
-    protected function refreshFile()
-    {
-        $config = [];
-        foreach ($this->model->all() as $k => $v) {
-
-            $value = $v->toArray();
-            if (in_array($value['type'], ['selects', 'checkbox', 'images', 'files'])) {
-                $value['value'] = explode(',', $value['value']);
-            }
-            if ($value['type'] == 'array') {
-                $value['value'] = (array)json_decode($value['value'], TRUE);
-            }
-            $config[$value['name']] = $value['value'];
-        }
-        file_put_contents(APP_PATH . 'extra' . DS . 'site.php', '<?php' . "\n\nreturn " . var_export($config, true) . ";");
-    }
-
-    /**
      * 检测配置项是否存在
      * @internal
      */
@@ -180,16 +181,41 @@ class Config extends Backend
     {
         $params = $this->request->post("row/a");
         if ($params) {
-
             $config = $this->model->get($params);
             if (!$config) {
-                return $this->success();
+                $this->success();
             } else {
-                return $this->error(__('Name already exist'));
+                $this->error(__('Name already exist'));
             }
         } else {
-            return $this->error(__('Invalid parameters'));
+            $this->error(__('Invalid parameters'));
         }
+    }
+
+    /**
+     * 规则列表
+     * @internal
+     */
+    public function rulelist()
+    {
+        //主键
+        $primarykey = $this->request->request("keyField");
+        //主键值
+        $keyValue = $this->request->request("keyValue", "");
+
+        $keyValueArr = array_filter(explode(',', $keyValue));
+        $regexList = \app\common\model\Config::getRegexList();
+        $list = [];
+        foreach ($regexList as $k => $v) {
+            if ($keyValueArr) {
+                if (in_array($k, $keyValueArr)) {
+                    $list[] = ['id' => $k, 'name' => $v];
+                }
+            } else {
+                $list[] = ['id' => $k, 'name' => $v];
+            }
+        }
+        return json(['list' => $list]);
     }
 
     /**
@@ -199,19 +225,69 @@ class Config extends Backend
     public function emailtest()
     {
         $row = $this->request->post('row/a');
-        \think\Config::set('site', array_merge(\think\Config::get('site'), $row));
-        $receiver = $this->request->request("receiver");
-        $email = new Email;
-        $result = $email
-            ->to($receiver)
-            ->subject(__("This is a test mail"))
-            ->message('<div style="min-height:550px; padding: 100px 55px 200px;">' . __('This is a test mail content') . '</div>')
-            ->send();
-        if ($result) {
-            $this->success();
+        $receiver = $this->request->post("receiver");
+        if ($receiver) {
+            if (!Validate::is($receiver, "email")) {
+                $this->error(__('Please input correct email'));
+            }
+            \think\Config::set('site', array_merge(\think\Config::get('site'), $row));
+            $email = new Email;
+            $result = $email
+                ->to($receiver)
+                ->subject(__("This is a test mail", config('site.name')))
+                ->message('<div style="min-height:550px; padding: 100px 55px 200px;">' . __('This is a test mail content', config('site.name')) . '</div>')
+                ->send();
+            if ($result) {
+                $this->success();
+            } else {
+                $this->error($email->getError());
+            }
         } else {
-            $this->error($email->getError());
+            $this->error(__('Invalid parameters'));
         }
     }
 
+    public function selectpage()
+    {
+        $id = $this->request->get("id/d");
+        $config = \app\common\model\Config::get($id);
+        if (!$config) {
+            $this->error(__('Invalid parameters'));
+        }
+        $setting = $config['setting'];
+        //自定义条件
+        $custom = isset($setting['conditions']) ? (array)json_decode($setting['conditions'], true) : [];
+        $custom = array_filter($custom);
+
+        $this->request->request(['showField' => $setting['field'], 'keyField' => $setting['primarykey'], 'custom' => $custom, 'searchField' => [$setting['field'], $setting['primarykey']]]);
+        $this->model = \think\Db::connect()->setTable($setting['table']);
+        return parent::selectpage();
+    }
+
+    /**
+     * 获取表列表
+     * @internal
+     */
+    public function get_table_list()
+    {
+        $tableList = [];
+        $dbname = \think\Config::get('database.database');
+        $tableList = \think\Db::query("SELECT `TABLE_NAME` AS `name`,`TABLE_COMMENT` AS `title` FROM `information_schema`.`TABLES` where `TABLE_SCHEMA` = '{$dbname}';");
+        $this->success('', null, ['tableList' => $tableList]);
+    }
+
+    /**
+     * 获取表字段列表
+     * @internal
+     */
+    public function get_fields_list()
+    {
+        $table = $this->request->request('table');
+        $dbname = \think\Config::get('database.database');
+        //从数据库中获取表字段信息
+        $sql = "SELECT `COLUMN_NAME` AS `name`,`COLUMN_COMMENT` AS `title`,`DATA_TYPE` AS `type` FROM `information_schema`.`columns` WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION";
+        //加载主表的列
+        $fieldList = Db::query($sql, [$dbname, $table]);
+        $this->success("", null, ['fieldList' => $fieldList]);
+    }
 }

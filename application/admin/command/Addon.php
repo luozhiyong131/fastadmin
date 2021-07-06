@@ -21,11 +21,12 @@ class Addon extends Command
         $this
             ->setName('addon')
             ->addOption('name', 'a', Option::VALUE_REQUIRED, 'addon name', null)
-            ->addOption('action', 'c', Option::VALUE_REQUIRED, 'action(create/enable/disable/install/uninstall/refresh/upgrade/package)', 'create')
+            ->addOption('action', 'c', Option::VALUE_REQUIRED, 'action(create/enable/disable/install/uninstall/refresh/upgrade/package/move)', 'create')
             ->addOption('force', 'f', Option::VALUE_OPTIONAL, 'force override', null)
             ->addOption('release', 'r', Option::VALUE_OPTIONAL, 'addon release version', null)
             ->addOption('uid', 'u', Option::VALUE_OPTIONAL, 'fastadmin uid', null)
             ->addOption('token', 't', Option::VALUE_OPTIONAL, 'fastadmin token', null)
+            ->addOption('local', 'l', Option::VALUE_OPTIONAL, 'local package', null)
             ->setDescription('Addon manager');
     }
 
@@ -33,8 +34,8 @@ class Addon extends Command
     {
         $name = $input->getOption('name') ?: '';
         $action = $input->getOption('action') ?: '';
-        if (stripos($name, 'addons/') !== false) {
-            $name = explode('/', $name)[1];
+        if (stripos($name, 'addons' . DS) !== false) {
+            $name = explode(DS, $name)[1];
         }
         //强制覆盖
         $force = $input->getOption('force');
@@ -50,7 +51,7 @@ class Addon extends Command
         if (!$name) {
             throw new Exception('Addon name could not be empty');
         }
-        if (!$action || !in_array($action, ['create', 'disable', 'enable', 'install', 'uninstall', 'refresh', 'upgrade', 'package'])) {
+        if (!$action || !in_array($action, ['create', 'disable', 'enable', 'install', 'uninstall', 'refresh', 'upgrade', 'package', 'move'])) {
             throw new Exception('Please input correct action name');
         }
 
@@ -87,7 +88,7 @@ class Addon extends Command
                     'name'               => $name,
                     'addon'              => $name,
                     'addonClassName'     => ucfirst($name),
-                    'addonInstallMenu'   => $createMenu ? "\$menu = " . var_export_short($createMenu, "\t") . ";\n\tMenu::create(\$menu);" : '',
+                    'addonInstallMenu'   => $createMenu ? "\$menu = " . var_export_short($createMenu) . ";\n\tMenu::create(\$menu);" : '',
                     'addonUninstallMenu' => $menuList ? 'Menu::delete("' . $name . '");' : '',
                     'addonEnableMenu'    => $menuList ? 'Menu::enable("' . $name . '");' : '',
                     'addonDisableMenu'   => $menuList ? 'Menu::disable("' . $name . '");' : '',
@@ -119,7 +120,7 @@ class Addon extends Command
                             $output->warning($v);
                         }
                         $output->info("Are you sure you want to " . ($action == 'enable' ? 'override' : 'delete') . " all those files?  Type 'yes' to continue: ");
-                        $line = fgets(STDIN);
+                        $line = fgets(defined('STDIN') ? STDIN : fopen('php://stdin', 'r'));
                         if (trim($line) != 'yes') {
                             throw new Exception("Operation is aborted!");
                         }
@@ -140,8 +141,10 @@ class Addon extends Command
                 if (is_dir($addonDir)) {
                     rmdirs($addonDir);
                 }
+                // 获取本地路径
+                $local = $input->getOption('local');
                 try {
-                    Service::install($name, 0, ['version' => $release]);
+                    Service::install($name, 0, ['version' => $release], $local);
                 } catch (AddonException $e) {
                     if ($e->getCode() != -3) {
                         throw new Exception($e->getMessage());
@@ -153,12 +156,12 @@ class Addon extends Command
                             $output->warning($v);
                         }
                         $output->info("Are you sure you want to override all those files?  Type 'yes' to continue: ");
-                        $line = fgets(STDIN);
+                        $line = fgets(defined('STDIN') ? STDIN : fopen('php://stdin', 'r'));
                         if (trim($line) != 'yes') {
                             throw new Exception("Operation is aborted!");
                         }
                     }
-                    Service::install($name, 1, ['version' => $release, 'uid' => $uid, 'token' => $token]);
+                    Service::install($name, 1, ['version' => $release, 'uid' => $uid, 'token' => $token], $local);
                 } catch (Exception $e) {
                     throw new Exception($e->getMessage());
                 }
@@ -183,7 +186,7 @@ class Addon extends Command
                             $output->warning($v);
                         }
                         $output->info("Are you sure you want to delete all those files?  Type 'yes' to continue: ");
-                        $line = fgets(STDIN);
+                        $line = fgets(defined('STDIN') ? STDIN : fopen('php://stdin', 'r'));
                         if (trim($line) != 'yes') {
                             throw new Exception("Operation is aborted!");
                         }
@@ -250,8 +253,69 @@ class Addon extends Command
                 $zip->close();
                 $output->info("Package Successed!");
                 break;
-
-            default :
+            case 'move':
+                $movePath = [
+                    'adminOnlySelfDir' => ['admin/behavior', 'admin/controller', 'admin/library', 'admin/model', 'admin/validate', 'admin/view'],
+                    'adminAllSubDir' => ['admin/lang'],
+                    'publicDir' => ['public/assets/addons', 'public/assets/js/backend']
+                ];
+                $paths = [];
+                $appPath = str_replace('/', DS, APP_PATH);
+                $rootPath = str_replace('/', DS, ROOT_PATH);
+                foreach ($movePath as $k => $items) {
+                    switch ($k) {
+                        case 'adminOnlySelfDir':
+                            foreach ($items as $v) {
+                                $v = str_replace('/', DS, $v);
+                                $oldPath = $appPath . $v . DS . $name;
+                                $newPath = $rootPath . "addons" . DS . $name . DS . "application" . DS . $v . DS . $name;
+                                $paths[$oldPath] = $newPath;
+                            }
+                            break;
+                        case 'adminAllSubDir':
+                            foreach ($items as $v) {
+                                $v = str_replace('/', DS, $v);
+                                $vPath = $appPath . $v;
+                                $list = scandir($vPath);
+                                foreach ($list as $_v) {
+                                    if (!in_array($_v, ['.', '..']) && is_dir($vPath . DS . $_v)) {
+                                        $oldPath = $appPath . $v . DS . $_v . DS . $name;
+                                        $newPath = $rootPath . "addons" . DS . $name . DS . "application" . DS . $v . DS . $_v . DS . $name;
+                                        $paths[$oldPath] = $newPath;
+                                    }
+                                }
+                            }
+                            break;
+                        case 'publicDir':
+                            foreach ($items as $v) {
+                                $v = str_replace('/', DS, $v);
+                                $oldPath = $rootPath . $v . DS . $name;
+                                $newPath = $rootPath . 'addons' . DS . $name . DS . $v . DS . $name;
+                                $paths[$oldPath] = $newPath;
+                            }
+                            break;
+                    }
+                }
+                foreach ($paths as $oldPath => $newPath) {
+                    if (is_dir($oldPath)) {
+                        if ($force) {
+                            if (is_dir($newPath)) {
+                                $list = scandir($newPath);
+                                foreach ($list as $_v) {
+                                    if (!in_array($_v, ['.', '..'])) {
+                                        $file = $newPath . DS . $_v;
+                                        @chmod($file, 0777);
+                                        @unlink($file);
+                                    }
+                                }
+                                @rmdir($newPath);
+                            }
+                        }
+                        copydirs($oldPath, $newPath);
+                    }
+                }
+                break;
+            default:
                 break;
         }
     }

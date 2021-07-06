@@ -4,8 +4,7 @@ require.config({
         name: 'moment',
         location: '../libs/moment',
         main: 'moment'
-    }
-    ],
+    }],
     //在打包压缩时将会把include中的模块合并到主文件中
     include: ['css', 'layer', 'toastr', 'fast', 'backend', 'backend-init', 'table', 'form', 'dragsort', 'drag', 'drop', 'addtabs', 'selectpage'],
     paths: {
@@ -13,9 +12,9 @@ require.config({
         'form': 'require-form',
         'table': 'require-table',
         'upload': 'require-upload',
-        'validator': 'require-validator',
         'drag': 'jquery.drag.min',
         'drop': 'jquery.drop.min',
+        'dropzone': 'dropzone.min',
         'echarts': 'echarts.min',
         'echarts-theme': 'echarts-theme',
         'adminlte': 'adminlte',
@@ -31,16 +30,18 @@ require.config({
         'bootstrap-select-lang': '../libs/bootstrap-select/dist/js/i18n/defaults-zh_CN',
         'bootstrap-table': '../libs/bootstrap-table/dist/bootstrap-table.min',
         'bootstrap-table-export': '../libs/bootstrap-table/dist/extensions/export/bootstrap-table-export.min',
+        'bootstrap-table-fixed-columns': '../libs/bootstrap-table/dist/extensions/fixed-columns/bootstrap-table-fixed-columns',
         'bootstrap-table-mobile': '../libs/bootstrap-table/dist/extensions/mobile/bootstrap-table-mobile',
         'bootstrap-table-lang': '../libs/bootstrap-table/dist/locale/bootstrap-table-zh-CN',
+        'bootstrap-table-jumpto': '../libs/bootstrap-table/dist/extensions/page-jumpto/bootstrap-table-jumpto',
+        'bootstrap-slider': '../libs/bootstrap-slider/bootstrap-slider',
         'tableexport': '../libs/tableExport.jquery.plugin/tableExport.min',
         'dragsort': '../libs/fastadmin-dragsort/jquery.dragsort',
         'sortable': '../libs/Sortable/Sortable.min',
         'addtabs': '../libs/fastadmin-addtabs/jquery.addtabs',
         'slimscroll': '../libs/jquery-slimscroll/jquery.slimscroll',
-        'validator-core': '../libs/nice-validator/dist/jquery.validator',
+        'validator': '../libs/nice-validator/dist/jquery.validator',
         'validator-lang': '../libs/nice-validator/dist/local/zh-CN',
-        'plupload': '../libs/plupload/js/plupload.min',
         'toastr': '../libs/toastr/toastr',
         'jstree': '../libs/jstree/dist/jstree.min',
         'layer': '../libs/fastadmin-layer/dist/layer',
@@ -56,10 +57,7 @@ require.config({
         'addons': ['backend'],
         'bootstrap': ['jquery'],
         'bootstrap-table': {
-            deps: [
-                'bootstrap',
-//                'css!../libs/bootstrap-table/dist/bootstrap-table.min.css'
-            ],
+            deps: ['bootstrap'],
             exports: '$.fn.bootstrapTable'
         },
         'bootstrap-table-lang': {
@@ -68,6 +66,10 @@ require.config({
         },
         'bootstrap-table-export': {
             deps: ['bootstrap-table', 'tableexport'],
+            exports: '$.fn.bootstrapTable.defaults'
+        },
+        'bootstrap-table-fixed-columns': {
+            deps: ['bootstrap-table'],
             exports: '$.fn.bootstrapTable.defaults'
         },
         'bootstrap-table-mobile': {
@@ -86,6 +88,10 @@ require.config({
             deps: ['bootstrap-table', 'template'],
             exports: '$.fn.bootstrapTable.defaults'
         },
+        'bootstrap-table-jumpto': {
+            deps: ['bootstrap-table'],
+            exports: '$.fn.bootstrapTable.defaults'
+        },
         'tableexport': {
             deps: ['jquery'],
             exports: '$.fn.extend'
@@ -98,22 +104,15 @@ require.config({
             deps: ['bootstrap', 'slimscroll'],
             exports: '$.AdminLTE'
         },
+        'bootstrap-daterangepicker': [
+            'moment/locale/zh-cn'
+        ],
         'bootstrap-datetimepicker': [
             'moment/locale/zh-cn',
-//            'css!../libs/eonasdan-bootstrap-datetimepicker/build/css/bootstrap-datetimepicker.min.css',
         ],
-//        'bootstrap-select': ['css!../libs/bootstrap-select/dist/css/bootstrap-select.min.css',],
         'bootstrap-select-lang': ['bootstrap-select'],
-//        'toastr': ['css!../libs/toastr/toastr.min.css'],
-        'jstree': ['css!../libs/jstree/dist/themes/default/style.css',],
-        'plupload': {
-            deps: ['../libs/plupload/js/moxie.min'],
-            exports: "plupload"
-        },
-//        'layer': ['css!../libs/fastadmin-layer/dist/theme/default/layer.css'],
-//        'validator-core': ['css!../libs/nice-validator/dist/jquery.validator.css'],
-        'validator-lang': ['validator-core'],
-//        'selectpage': ['css!../libs/fastadmin-selectpage/selectpage.css'],
+        'jstree': ['css!../libs/jstree/dist/themes/default/style.css'],
+        'validator-lang': ['validator'],
         'citypicker': ['citypicker-data', 'css!../libs/fastadmin-citypicker/dist/css/city-picker.css']
     },
     baseUrl: requirejs.s.contexts._.config.config.site.cdnurl + '/assets/js/', //资源基础路径
@@ -122,7 +121,7 @@ require.config({
             'css': '../libs/require-css/css.min'
         }
     },
-    waitSeconds: 30,
+    waitSeconds: 60,
     charset: 'utf-8' // 文件编码
 });
 
@@ -133,7 +132,7 @@ require(['jquery', 'bootstrap'], function ($, undefined) {
     window.Config = Config;
     // 配置语言包的路径
     var paths = {};
-    paths['lang'] = Config.moduleurl + '/ajax/lang?callback=define&controllername=' + Config.controllername;
+    paths['lang'] = Config.moduleurl + '/ajax/lang?callback=define&controllername=' + Config.controllername + '&lang=' + Config.language + '&v=' + Config.site.version;
     // 避免目录冲突
     paths['backend/'] = 'backend/';
     require.config({paths: paths});
@@ -145,7 +144,13 @@ require(['jquery', 'bootstrap'], function ($, undefined) {
                 //加载相应模块
                 if (Config.jsname) {
                     require([Config.jsname], function (Controller) {
-                        Controller[Config.actionname] != undefined && Controller[Config.actionname]();
+                        if (Controller.hasOwnProperty(Config.actionname)) {
+                            Controller[Config.actionname]();
+                        } else {
+                            if (Controller.hasOwnProperty("_empty")) {
+                                Controller._empty();
+                            }
+                        }
                     }, function (e) {
                         console.error(e);
                         // 这里可捕获模块加载的错误

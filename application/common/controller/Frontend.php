@@ -7,6 +7,8 @@ use think\Config;
 use think\Controller;
 use think\Hook;
 use think\Lang;
+use think\Loader;
+use think\Validate;
 
 /**
  * 前台控制器基类
@@ -41,10 +43,13 @@ class Frontend extends Controller
     public function _initialize()
     {
         //移除HTML标签
-        $this->request->filter('strip_tags');
+        $this->request->filter('trim,strip_tags,htmlspecialchars');
         $modulename = $this->request->module();
-        $controllername = strtolower($this->request->controller());
+        $controllername = Loader::parseName($this->request->controller());
         $actionname = strtolower($this->request->action());
+
+        // 检测IP是否允许
+        check_ip_allowed();
 
         // 如果有使用模板布局
         if ($this->layout) {
@@ -64,7 +69,7 @@ class Frontend extends Controller
             $this->auth->init($token);
             //检测是否登录
             if (!$this->auth->isLogin()) {
-                $this->error(__('Please login first'), 'user/login');
+                $this->error(__('Please login first'), 'index/user/login');
             }
             // 判断是否需要验证权限
             if (!$this->auth->match($this->noNeedRight)) {
@@ -121,12 +126,13 @@ class Frontend extends Controller
      */
     protected function loadlang($name)
     {
+        $name =  Loader::parseName($name);
         Lang::load(APP_PATH . $this->request->module() . '/lang/' . $this->request->langset() . '/' . str_replace('.', '/', $name) . '.php');
     }
 
     /**
      * 渲染配置信息
-     * @param mixed $name 键名或数组
+     * @param mixed $name  键名或数组
      * @param mixed $value 值
      */
     protected function assignconfig($name, $value = '')
@@ -134,4 +140,19 @@ class Frontend extends Controller
         $this->view->config = array_merge($this->view->config ? $this->view->config : [], is_array($name) ? $name : [$name => $value]);
     }
 
+    /**
+     * 刷新Token
+     */
+    protected function token()
+    {
+        $token = $this->request->param('__token__');
+
+        //验证Token
+        if (!Validate::make()->check(['__token__' => $token], ['__token__' => 'require|token'])) {
+            $this->error(__('Token verification error'), '', ['__token__' => $this->request->token()]);
+        }
+
+        //刷新Token
+        $this->request->token();
+    }
 }
